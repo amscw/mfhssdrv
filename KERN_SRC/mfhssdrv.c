@@ -116,7 +116,7 @@ static struct kobj_type reg_type = {
 
 static void release_reg(struct kobject *kobj)
 {
-	PINFO("destroing object: %s\n", kobj->name);
+	PINFO("release_reg: destroing object: %s\n", kobj->name);
 	kfree(kobj);
 }
 
@@ -288,7 +288,7 @@ static void __exit mfhssdrv_exit(void)
 {	
 	/* TODO Auto-generated Function Stub */
 	// TODO: перенести в remove()
-	struct list_head *pnext;
+	struct list_head *pnext, *pcurr, *phead;
 	struct kobject *group;
 
 	mfhssdrv_private *charpriv = &device;
@@ -300,10 +300,13 @@ static void __exit mfhssdrv_exit(void)
 	 * @type:	the type of the struct this is embedded in.
 	 * @member:	the name of the list_head within the struct.
 	 */
-	list_for_each(pnext, &charpriv->dynamic_regs->list) {
-		/* pnext указывает на элемент списка */
-		group = list_entry(pnext, struct kobject, entry);
+
+	for (phead = &charpriv->dynamic_regs->list, pcurr = phead->next, pnext = 0; pnext != phead;  pcurr = pnext)
+	{
+		pnext = pcurr->next;	// запоминаем указатель на следующий объект ДО уничтожения текущего
+		group = list_entry(pcurr, struct kobject, entry);
 		kobject_del(group);
+		kobject_put(group);
 	}
 
 	// удаление каталога верхнего уровня
