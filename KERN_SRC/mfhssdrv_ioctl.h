@@ -13,9 +13,14 @@
 
 typedef struct
 {
-	const char name[128];
+	const char regName[32];
 	unsigned int address;
 } __attribute__((__packed__)) MFHSS_REG_TypeDef;
+
+typedef struct
+{
+	const char nodeName[32];
+} MFHSS_GROUP_TypeDef;
 
 /* Use 'm' as mfhssdrv magic number */
 #define MFHSSDRV_IOC_MAGIC 'm'
@@ -23,7 +28,8 @@ typedef struct
 /* SPIDRV commands */
 #define MFHSSDRV_IORESET 		_IO(MFHSSDRV_IOC_MAGIC, 0)
 #define MFHSSDRV_IOMAKEREG 		_IOW(MFHSSDRV_IOC_MAGIC, 1, MFHSS_REG_TypeDef)
+#define MFHSSDRV_IOMAKEGROUP	_IOW(MFHSSDRV_IOC_MAGIC, 2, MFHSS_GROUP_TypeDef)
 
-#define MFHSSDRV_IOC_MAXNR 2
+#define MFHSSDRV_IOC_MAXNR 3
 
 #endif /* MFHSSDRV_IOCTL_H_ */

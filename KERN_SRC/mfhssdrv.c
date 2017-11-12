@@ -107,6 +107,13 @@ static struct kobj_type reg_type = {
 //-------------------------------------------------------------------------------------------------
 // Functions
 //-------------------------------------------------------------------------------------------------
+/** container_of(ptr, type, member) :
+ * container_of - cast a member of a structure out to the containing structure
+ * @ptr:	the pointer to the member.
+ * @type:	the type of the container struct this is embedded in.
+ * @member:	the name of the member within the struct.
+ */
+
 static void release_reg(struct kobject *kobj)
 {
 	PDEBUG("release not implemented\n");
@@ -114,7 +121,9 @@ static void release_reg(struct kobject *kobj)
 
 static ssize_t sysfs_show_reg(struct kobject *kobj, struct attribute *attr, char *buf)
 {
-	PDEBUG("sysfs_show not implemented\n");
+	struct kset *dynamic_regs = container_of(kobj->parent, struct kset, kobj);
+	mfhssdrv_private *charpriv = container_of(&dynamic_regs, mfhssdrv_private, dynamic_regs);
+	PDEBUG("charpriv address: %p\n", charpriv);
 	return 0;
 }
 
@@ -167,8 +176,9 @@ static long mfhssdrv_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
 {
 	int res = 0;
 	mfhssdrv_private *charpriv = filp->private_data;
+	struct kobject *group;
 	MFHSS_REG_TypeDef reg_descr;
-	struct reg_object *reg;
+	MFHSS_GROUP_TypeDef group_descr;
 
 	PINFO("In char driver ioctl() function\n");
 
@@ -194,29 +204,35 @@ static long mfhssdrv_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
 		// TODO: MFHSSDRV_IORESET not implemented
 		break;
 
+	case MFHSSDRV_IOMAKEGROUP:
+		// забираем описание группы
+		copy_from_user(&group_descr, (const void __user *)arg, sizeof group_descr);
+		// выделяем память под новый объект
+		group = kzalloc(sizeof (struct kobject), GFP_KERNEL);
+		if (!group)
+		{
+			PERR("mfhssdrv_ioctl: Failed to alloc group object %s\n", group_descr.nodeName);
+			return -ENOMEM;
+		}
+		// настраиваем его и регистрируем
+		kobject_init(group, &reg_type);
+		group->kset = charpriv->dynamic_regs;
+		res = kobject_add(group, &charpriv->dynamic_regs->kobj, "%s", group_descr.nodeName);	// будем надеяться, что name будет скопирован.
+		if (res != 0)
+		{
+			PERR("mfhssdrv_ioctl: Failed to register group object %s\n", group_descr.nodeName);
+			kfree(group); // FIXME: kobject_put(reg->kobj); // будет вызван release, который удалит reg
+			return -ENOMEM;
+		}
+		PDEBUG("mfhssdrv_ioctl: new group added successfully (%s)\n", group_descr.nodeName);
+		break;
+
 	case MFHSSDRV_IOMAKEREG:
 		// забираем описание регистра из пространства пользователя
 		copy_from_user(&reg_descr, (const void __user *)arg, sizeof reg_descr);
-		// выделяем память под новый регистр
-		reg = kzalloc(sizeof *reg, GFP_KERNEL);
-		if (!reg)
-		{
-			PERR("mfhssdrv_ioctl: Failed to alloc reg %s\n", reg_descr.name);
-			return -ENOMEM;
-		}
-		// настраиваем его kobj и регистрируем
-		kobject_init(&reg->kobj, &reg_type);
-		reg->kobj.kset = charpriv->dynamic_regs;
-		res = kobject_add(&reg->kobj, &charpriv->dynamic_regs->kobj, "%s", reg_descr.name);	// будем надеяться, что name будет скопирован.
-		if (res != 0)
-		{
-			PERR("mfhssdrv_ioctl: Failed to register reg %s\n", reg_descr.name);
-			kfree(reg); // FIXME: kobject_put(reg->kobj); // будет вызван release, который удалит reg
-			return -ENOMEM;
-		}
-		reg->address = reg_descr.address;
-		reg->charpriv = charpriv;
-		PDEBUG("mfhssdrv_ioctl: new register added successfully (%s@0x%x)\n", reg_descr.name, reg_descr.address);
+		//reg->address = reg_descr.address;
+		//reg->charpriv = charpriv;
+
 		break;
 
 	default:

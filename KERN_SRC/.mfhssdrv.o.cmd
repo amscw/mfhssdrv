@@ -920,69 +920,9 @@ deps_/home/alex/git/mfhssdrv/KERN_SRC/mfhssdrv.o := \
     $(wildcard include/config/of/irq.h) \
   include/linux/irqdomain.h \
     $(wildcard include/config/irq/domain.h) \
-  include/linux/proc_fs.h \
   include/linux/of_address.h \
     $(wildcard include/config/of/address.h) \
-  include/linux/dma-mapping.h \
-    $(wildcard include/config/have/generic/dma/coherent.h) \
-    $(wildcard include/config/has/dma.h) \
-    $(wildcard include/config/arch/has/dma/set/coherent/mask.h) \
-    $(wildcard include/config/need/dma/map/state.h) \
-    $(wildcard include/config/dma/api/debug.h) \
-  include/linux/sizes.h \
-  include/linux/dma-debug.h \
-  include/linux/dma-direction.h \
-  include/linux/scatterlist.h \
-    $(wildcard include/config/debug/sg.h) \
-    $(wildcard include/config/need/sg/dma/length.h) \
-    $(wildcard include/config/arch/has/sg/chain.h) \
-    $(wildcard include/config/sg/pool.h) \
-  include/linux/mm.h \
-    $(wildcard include/config/have/arch/mmap/rnd/bits.h) \
-    $(wildcard include/config/have/arch/mmap/rnd/compat/bits.h) \
-    $(wildcard include/config/arch/uses/high/vma/flags.h) \
-    $(wildcard include/config/ppc.h) \
-    $(wildcard include/config/parisc.h) \
-    $(wildcard include/config/metag.h) \
-    $(wildcard include/config/shmem.h) \
-    $(wildcard include/config/debug/vm/rb.h) \
-    $(wildcard include/config/page/poisoning.h) \
-    $(wildcard include/config/debug/pagealloc.h) \
-    $(wildcard include/config/hugetlbfs.h) \
-  include/linux/page_ext.h \
-    $(wildcard include/config/idle/page/tracking.h) \
-  include/linux/stacktrace.h \
-    $(wildcard include/config/stacktrace.h) \
-    $(wildcard include/config/user/stacktrace/support.h) \
-  include/linux/stackdepot.h \
-  include/linux/page_ref.h \
-    $(wildcard include/config/debug/page/ref.h) \
-  include/linux/page-flags.h \
-    $(wildcard include/config/arch/uses/pg/uncached.h) \
-    $(wildcard include/config/memory/failure.h) \
-    $(wildcard include/config/swap.h) \
-    $(wildcard include/config/ksm.h) \
-  arch/x86/include/asm/pgtable.h \
-    $(wildcard include/config/debug/wx.h) \
-    $(wildcard include/config/have/arch/soft/dirty.h) \
-  arch/x86/include/asm/pgtable_64.h \
-  include/asm-generic/pgtable.h \
-  include/linux/huge_mm.h \
-  include/linux/vmstat.h \
-    $(wildcard include/config/vm/event/counters.h) \
-    $(wildcard include/config/debug/tlbflush.h) \
-    $(wildcard include/config/debug/vm/vmacache.h) \
-  include/linux/vm_event_item.h \
-    $(wildcard include/config/memory/balloon.h) \
-    $(wildcard include/config/balloon/compaction.h) \
-  include/linux/kmemcheck.h \
-  arch/x86/include/asm/dma-mapping.h \
-    $(wildcard include/config/isa.h) \
-    $(wildcard include/config/x86/dma/remap.h) \
-  arch/x86/include/asm/swiotlb.h \
-    $(wildcard include/config/swiotlb.h) \
-  include/linux/swiotlb.h \
-  include/linux/dma-contiguous.h \
+  /home/alex/git/mfhssdrv/KERN_SRC/mfhssdrv_ioctl.h \
 
 /home/alex/git/mfhssdrv/KERN_SRC/mfhssdrv.o: $(deps_/home/alex/git/mfhssdrv/KERN_SRC/mfhssdrv.o)
 
