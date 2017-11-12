@@ -1,0 +1,1 @@
+cmd_/home/alex/git/mfhssdrv/KERN_SRC/mfhssdrv.ko := ld -r -m elf_x86_64 -T ./scripts/module-common.lds --build-id  -o /home/alex/git/mfhssdrv/KERN_SRC/mfhssdrv.ko /home/alex/git/mfhssdrv/KERN_SRC/mfhssdrv.o /home/alex/git/mfhssdrv/KERN_SRC/mfhssdrv.mod.o ;  true
