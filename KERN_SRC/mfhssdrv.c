@@ -116,7 +116,8 @@ static struct kobj_type reg_type = {
 
 static void release_reg(struct kobject *kobj)
 {
-	PDEBUG("release not implemented\n");
+	PINFO("destroing object: %s\n", kobj->name);
+	kfree(kobj);
 }
 
 static ssize_t sysfs_show_reg(struct kobject *kobj, struct attribute *attr, char *buf)
@@ -287,10 +288,29 @@ static void __exit mfhssdrv_exit(void)
 {	
 	/* TODO Auto-generated Function Stub */
 	// TODO: перенести в remove()
+	struct list_head *pnext;
+	struct kobject *group;
+
 	mfhssdrv_private *charpriv = &device;
+
+	// удаление всех подкаталогов
+	/** HINT: list_entry(ptr, type, member)
+	 * list_entry - get the struct for this entry
+	 * @ptr:	the &struct list_head pointer.
+	 * @type:	the type of the struct this is embedded in.
+	 * @member:	the name of the list_head within the struct.
+	 */
+	list_for_each(pnext, &charpriv->dynamic_regs->list) {
+		/* pnext указывает на элемент списка */
+		group = list_entry(pnext, struct kobject, entry);
+		kobject_del(group);
+	}
+
+	// удаление каталога верхнего уровня
 	kset_unregister(charpriv->dynamic_regs);
 	mfhssdrv_device_num= MKDEV(mfhssdrv_major, MFHSSDRV_FIRST_MINOR);
-	// unregister device
+
+	// разрегистрация устройства
 	cdev_del(&charpriv->cdev);
 	device_destroy(mfhssdrv_class, mfhssdrv_device_num);
 

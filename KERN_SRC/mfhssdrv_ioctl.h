@@ -13,13 +13,13 @@
 
 typedef struct
 {
-	const char regName[32];
+	/* const */ char regName[32];
 	unsigned int address;
 } __attribute__((__packed__)) MFHSS_REG_TypeDef;
 
 typedef struct
 {
-	const char nodeName[32];
+	/* const */ char nodeName[32];
 } MFHSS_GROUP_TypeDef;
 
 /* Use 'm' as mfhssdrv magic number */
