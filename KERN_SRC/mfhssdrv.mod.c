@@ -19,9 +19,5 @@ __used
 __attribute__((section(".modinfo"))) =
 "depends=";
 
-MODULE_ALIAS("of:N*T*Cxlnx,axi-modem-fhss-1.0");
-MODULE_ALIAS("of:N*T*Cxlnx,axi-modem-fhss-1.0C*");
-MODULE_ALIAS("of:N*T*Caxi-modem-fhss-1.0");
-MODULE_ALIAS("of:N*T*Caxi-modem-fhss-1.0C*");
 
-MODULE_INFO(srcversion, "F075100F8AF861D8F7A6294");
+MODULE_INFO(srcversion, "0EEA2E820DB8FB3EF762D94");
