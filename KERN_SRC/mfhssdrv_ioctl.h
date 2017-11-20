@@ -11,15 +11,17 @@
 #include <linux/types.h>
 #include <linux/ioctl.h>
 
+#define REG_NAME_SIZE	32
+
 typedef struct
 {
-	/* const */ char regName[32];
+	/* const */ char regName[REG_NAME_SIZE];
 	unsigned int address;
 } __attribute__((__packed__)) MFHSS_REG_TypeDef;
 
 typedef struct
 {
-	/* const */ char nodeName[32];
+	/* const */ char nodeName[REG_NAME_SIZE];
 } MFHSS_GROUP_TypeDef;
 
 /* Use 'm' as mfhssdrv magic number */

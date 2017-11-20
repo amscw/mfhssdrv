@@ -40,17 +40,73 @@ typedef struct privatedata {
 // файлы полей регистров
 struct reg_attribute {
 	struct attribute default_attribute;
+	u32 address;
 	u32 value;
-	u8 bitOffset;
-	u8 bitSize;
 } __attribute__((__packed__));
 
-// объекты-регистры
-struct reg_object {
-	struct kobject kobj;
-	u32 address;
-	mfhssdrv_private *charpriv;
-};
+//-------------------------------------------------------------------------------------------------
+// MACRO (registers)
+//-------------------------------------------------------------------------------------------------
+// hardcoded registers
+#define REG_DMA_CR_NAME			"cr"
+#define REG_DMA_CR_ADDRESS		0x0004
+#define REG_DMA_SR_NAME			"sr"
+#define REG_DMA_SR_ADDRESS		0x0008
+#define REG_DMA_IR_NAME			"ir"
+#define REG_DMA_IR_ADDRESS		0x000C
+#define REG_DMA_SA_NAME			"sa"
+#define REG_DMA_SA_ADDRESS		0x0010
+#define REG_DMA_DA_NAME			"da"
+#define REG_DMA_DA_ADDRESS		0x0014
+#define REG_DMA_SL_NAME			"sl"
+#define REG_DMA_SL_ADDRESS		0x0018
+#define REG_DMA_DL_NAME			"dl"
+#define REG_DMA_DL_ADDRESS		0x001C
+#define REG_MLIP_SR_NAME		"sr"
+#define REG_MLIP_SR_ADDRESS		0x0020
+#define REG_MLIP_IR_NAME		"ir"
+#define REG_MLIP_IR_ADDRESS		0x0024
+#define REG_MLIP_RST_NAME		"rst"
+#define REG_MLIP_RST_ADDRESS	0x0028
+#define REG_MLIP_CE_NAME		"ce"
+#define REG_MLIP_CE_ADDRESS		0x001C
+
+// имя переменной-регистра (атрибута)
+#define REG(group, reg) reg_##group##_##reg
+
+// создает регистр (атрибут sysfs)
+#define MAKE_REG(group, reg) \
+	static struct reg_attribute REG(group, reg) = {\
+		{\
+			.name = REG_##group##_##reg##_NAME,\
+			.mode = S_IRUGO | S_IWUSR\
+		}, REG_##group##_##reg##_ADDRESS, 0\
+}
+
+// создает объект с операциями над регистром (sysfs_ops)
+#define MAKE_GROUP_OPS(group) \
+	static ssize_t sysfs_show_##group(struct kobject *kobj, struct attribute *attr, char *buf)\
+	{\
+		return 0;\
+	}\
+	\
+	static ssize_t sysfs_store_##group(struct kobject *kobj, struct attribute* attr, const char *buf, size_t len)\
+	{\
+		return 0;\
+	}\
+	\
+	static struct sysfs_ops group##_ops = {\
+		.show = sysfs_show_##group,\
+		.store = sysfs_store_##group,\
+	};\
+
+// создает тип регистра (тип kobject)
+#define MAKE_GROUP(group) \
+	MAKE_GROUP_OPS(group);\
+	static struct kobj_type group##_type = {\
+		.sysfs_ops = &group##_ops,\
+		.default_attrs = group##_attributes,\
+	};
 
 //-------------------------------------------------------------------------------------------------
 // Prototypes
@@ -85,7 +141,7 @@ static const struct file_operations mfhssdrv_fops= {
 // sysfs objects and attributes for dynamic registers
 static struct reg_attribute reg_value = {
 	{ .name = "value", .mode = S_IRUGO | S_IWUSR },
-	0, 0, 0,
+	0, 0
 };
 
 static struct attribute *default_reg_attrs[] = {
@@ -104,6 +160,28 @@ static struct kobj_type reg_type = {
 	.default_attrs = default_reg_attrs,
 };
 
+// hardcoded registers
+MAKE_REG(DMA, CR);
+MAKE_REG(DMA, SR);
+MAKE_REG(DMA, IR);
+MAKE_REG(DMA, SA);
+MAKE_REG(DMA, DA);
+MAKE_REG(DMA, SL);
+MAKE_REG(DMA, DL);
+static struct attribute *DMA_attributes[] = {
+	&REG(DMA, CR).default_attribute,
+	&REG(DMA, SR).default_attribute,
+	&REG(DMA, IR).default_attribute,
+	&REG(DMA, SA).default_attribute,
+	&REG(DMA, DA).default_attribute,
+	&REG(DMA, SL).default_attribute,
+	&REG(DMA, DL).default_attribute,
+	NULL
+};
+MAKE_GROUP(DMA);
+
+
+
 //-------------------------------------------------------------------------------------------------
 // Functions
 //-------------------------------------------------------------------------------------------------
@@ -113,6 +191,27 @@ static struct kobj_type reg_type = {
  * @type:	the type of the container struct this is embedded in.
  * @member:	the name of the member within the struct.
  */
+
+static inline void destroy_objects(struct kset *pkset)
+{
+	struct list_head *pnext, *pcurr, *phead;
+	struct kobject *pkobj = 0;
+
+	if (!pkset)
+		return;
+
+	// удаление всех объектов множества
+	for (phead = &pkset->list, pcurr = phead->next, pnext = 0; pnext != phead;  pcurr = pnext)
+	{
+		pnext = pcurr->next;	// запоминаем указатель на следующий объект ДО уничтожения текущего
+		pkobj = list_entry(pcurr, struct kobject, entry);
+		kobject_del(pkobj);
+		kobject_put(pkobj);
+	}
+
+	// удаление каталога верхнего уровня
+	kset_unregister(pkset);
+}
 
 static void release_reg(struct kobject *kobj)
 {
@@ -288,29 +387,10 @@ static void __exit mfhssdrv_exit(void)
 {	
 	/* TODO Auto-generated Function Stub */
 	// TODO: перенести в remove()
-	struct list_head *pnext, *pcurr, *phead;
-	struct kobject *group;
-
 	mfhssdrv_private *charpriv = &device;
 
-	// удаление всех подкаталогов
-	/** HINT: list_entry(ptr, type, member)
-	 * list_entry - get the struct for this entry
-	 * @ptr:	the &struct list_head pointer.
-	 * @type:	the type of the struct this is embedded in.
-	 * @member:	the name of the list_head within the struct.
-	 */
+	destroy_objects(charpriv->dynamic_regs);
 
-	for (phead = &charpriv->dynamic_regs->list, pcurr = phead->next, pnext = 0; pnext != phead;  pcurr = pnext)
-	{
-		pnext = pcurr->next;	// запоминаем указатель на следующий объект ДО уничтожения текущего
-		group = list_entry(pcurr, struct kobject, entry);
-		kobject_del(group);
-		kobject_put(group);
-	}
-
-	// удаление каталога верхнего уровня
-	kset_unregister(charpriv->dynamic_regs);
 	mfhssdrv_device_num= MKDEV(mfhssdrv_major, MFHSSDRV_FIRST_MINOR);
 
 	// разрегистрация устройства
