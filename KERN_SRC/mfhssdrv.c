@@ -74,6 +74,9 @@ struct reg_attribute {
 // имя переменной-регистра (атрибута)
 #define REG(group, reg) reg_##group##_##reg
 
+// имя переменной-группы
+#define GROUP_TYPE(group) group##_type
+
 // создает регистр (атрибут sysfs)
 #define MAKE_REG(group, reg) \
 	static struct reg_attribute REG(group, reg) = {\
@@ -101,9 +104,9 @@ struct reg_attribute {
 	};\
 
 // создает тип регистра (тип kobject)
-#define MAKE_GROUP(group) \
+#define MAKE_GROUP_TYPE(group) \
 	MAKE_GROUP_OPS(group);\
-	static struct kobj_type group##_type = {\
+	static struct kobj_type GROUP_TYPE(group) = {\
 		.sysfs_ops = &group##_ops,\
 		.default_attrs = group##_attributes,\
 	};
@@ -160,7 +163,7 @@ static struct kobj_type reg_type = {
 	.default_attrs = default_reg_attrs,
 };
 
-// hardcoded registers
+// hardcoded DMA registers
 MAKE_REG(DMA, CR);
 MAKE_REG(DMA, SR);
 MAKE_REG(DMA, IR);
@@ -178,9 +181,21 @@ static struct attribute *DMA_attributes[] = {
 	&REG(DMA, DL).default_attribute,
 	NULL
 };
-MAKE_GROUP(DMA);
+MAKE_GROUP_TYPE(DMA);
 
-
+// hardcoded MLIP registers
+MAKE_REG(MLIP, SR);
+MAKE_REG(MLIP, IR);
+MAKE_REG(MLIP, RST);
+MAKE_REG(MLIP, CE);
+static struct attribute *MLIP_attributes[] = {
+	&REG(MLIP, SR).default_attribute,
+	&REG(MLIP, IR).default_attribute,
+	&REG(MLIP, RST).default_attribute,
+	&REG(MLIP, CE).default_attribute,
+	NULL
+};
+MAKE_GROUP_TYPE(MLIP);
 
 //-------------------------------------------------------------------------------------------------
 // Functions
