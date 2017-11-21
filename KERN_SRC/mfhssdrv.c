@@ -171,19 +171,18 @@ int mfhssdrv_major=0;
 dev_t mfhssdrv_device_num;
 struct class *mfhssdrv_class;
 // TODO: спрятать в private data для platform device
-mfhssdrv_private device;
 
-static struct of_device_id spidrv_of_match[] = {
-	{ .compatible = "xlnx,axi-SpiMaster-1.0", },
+static struct of_device_id mfhssdrv_of_match[] = {
+	{ .compatible = "xlnx,axi-modem-fhss-1.0", },
 	{}
 };
-MODULE_DEVICE_TABLE(of, spidrv_of_match);
+MODULE_DEVICE_TABLE(of, mfhssdrv_of_match);
 
-struct platform_driver spidrv_driver = {
+struct platform_driver mfhssdrv_driver = {
 		.driver = {
 			.name	= DRIVER_NAME,
 			.owner	= THIS_MODULE,
-			.of_match_table = of_match_ptr(spidrv_of_match),
+			.of_match_table = of_match_ptr(mfhssdrv_of_match),
 		},
 		.probe 		= mfhssdrv_probe,
 		.remove		= mfhssdrv_remove,
@@ -532,6 +531,7 @@ static int mfhssdrv_probe(struct platform_device *pdev)
 	return 0;
 }
 
+// TODO: возможно, имеет смысл вынести все в exit, т.к. для SoC этот метод не будет вызван никогда
 static int mfhssdrv_remove(struct platform_device *pdev)
 {
 	platform_private *priv = platform_get_drvdata(pdev);
@@ -571,17 +571,24 @@ static int __init mfhssdrv_init(void)
 		PERR("class creation failed\n");
 		return -1;
 	}
-	PINFO("INIT\n");
+
+	res = platform_driver_register(&mfhssdrv_driver);
+	if (res) {
+		PERR("Failed to register the platform driver\n");
+		return res;
+	}
+	PDEBUG("INIT ok!\n");
 
 	return 0;
 }
 
 static void __exit mfhssdrv_exit(void)
 {	
-	PINFO("EXIT\n");
-
 	class_destroy(mfhssdrv_class);
 	unregister_chrdev_region(mfhssdrv_device_num, MFHSSDRV_N_MINORS);
+
+	PDEBUG("EXIT ok!\n");
+
 }
 
 module_init(mfhssdrv_init);
