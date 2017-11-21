@@ -40,6 +40,13 @@ typedef struct privatedata {
 	struct kset *dynamic_regs;
 } mfhssdrv_private;
 
+typedef struct {
+	mfhssdrv_private charpriv;
+	struct platform_device *pdev;
+	int irq_tx;
+	int irq_rx;
+} platform_private;
+
 // файлы регистров
 struct reg_attribute {
 	struct attribute default_attribute;
@@ -106,12 +113,27 @@ struct reg_group {
 	\
 	static ssize_t sysfs_show_##group(struct kobject *kobj, struct attribute *attr, char *buf)\
 	{\
-		return 0;\
+		unsigned long flags = 0;\
+		struct reg_group *g = container_of(kobj, struct reg_group, kobj);\
+		struct reg_attribute *a = container_of(attr, struct reg_attribute, default_attribute);\
+		spin_lock_irqsave(&g->charpriv->lock, flags);\
+		a->value = ioread32((void __iomem*)(g->charpriv->io_base + a->address));\
+		spin_unlock_irqrestore(&g->charpriv->lock, flags);\
+		PDEBUG("read from %s@0x%X = 0x%X\n", attr->name, a->address, a->value);\
+		return scnprintf(buf, PAGE_SIZE, "%d\n", a->value);\
 	}\
 	\
 	static ssize_t sysfs_store_##group(struct kobject *kobj, struct attribute* attr, const char *buf, size_t len)\
 	{\
-		return 0;\
+		unsigned long flags = 0;\
+		struct reg_group *g = container_of(kobj, struct reg_group, kobj);\
+		struct reg_attribute *a = container_of(attr, struct reg_attribute, default_attribute);\
+		sscanf(buf, "%d", &a->value);\
+		spin_lock_irqsave(&g->charpriv->lock, flags);\
+		iowrite32(a->value, (void __iomem*)(g->charpriv->io_base + a->address));\
+		spin_unlock_irqrestore(&g->charpriv->lock, flags);\
+		PDEBUG("write 0x%X to %s@0x%X\n", a->value, a->default_attribute.name, a->address);\
+		return len;\
 	}\
 	\
 	static struct sysfs_ops group##_ops = {\
@@ -139,6 +161,8 @@ static long mfhssdrv_ioctl(struct file *filp, unsigned int cmd , unsigned long a
 static ssize_t sysfs_show_reg(struct kobject *kobj, struct attribute *attr, char *buf);
 static ssize_t sysfs_store_reg(struct kobject *kobj, struct attribute* attr, const char *buf, size_t len);
 static void release_reg(struct kobject *kobj);
+static int mfhssdrv_probe(struct platform_device *pdev);
+static int mfhssdrv_remove(struct platform_device *pdev);
 
 //-------------------------------------------------------------------------------------------------
 // Variables
@@ -148,6 +172,23 @@ dev_t mfhssdrv_device_num;
 struct class *mfhssdrv_class;
 // TODO: спрятать в private data для platform device
 mfhssdrv_private device;
+
+static struct of_device_id spidrv_of_match[] = {
+	{ .compatible = "xlnx,axi-SpiMaster-1.0", },
+	{}
+};
+MODULE_DEVICE_TABLE(of, spidrv_of_match);
+
+struct platform_driver spidrv_driver = {
+		.driver = {
+			.name	= DRIVER_NAME,
+			.owner	= THIS_MODULE,
+			.of_match_table = of_match_ptr(spidrv_of_match),
+		},
+		.probe 		= mfhssdrv_probe,
+		.remove		= mfhssdrv_remove,
+};
+
 
 static const struct file_operations mfhssdrv_fops= {
 	.owner				= THIS_MODULE,
@@ -253,11 +294,15 @@ static inline void destroy_objects(struct kset *pkset)
 
 static inline void cleanup_all(mfhssdrv_private *charpriv)
 {
+	platform_private *priv = container_of(charpriv, platform_private, charpriv);
+
 	if (!charpriv)
 		return;
 
 	destroy_objects(charpriv->dynamic_regs);
 	destroy_objects(charpriv->hardcoded_regs);
+
+	kfree(priv);
 }
 
 static void release_reg(struct kobject *kobj)
@@ -384,36 +429,31 @@ static long mfhssdrv_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
 		break;
 
 	default:
+		PERR("unsupported command: 0x%x\n", cmd);
 		return -ENOTTY;
 	}
 
 	return 0;
 }
 
-
-static int __init mfhssdrv_init(void)
+static int mfhssdrv_probe(struct platform_device *pdev)
 {
-	/* TODO Auto-generated Function Stub */
 	int res;
-
-	res = alloc_chrdev_region(&mfhssdrv_device_num, MFHSSDRV_FIRST_MINOR,MFHSSDRV_N_MINORS, DRIVER_NAME);
-	if(res) {
-		PERR("register device no failed\n");
-		return -1;
-	}
-	mfhssdrv_major = MAJOR(mfhssdrv_device_num);
-
-	mfhssdrv_class = class_create(THIS_MODULE , DRIVER_NAME);
-	if(!mfhssdrv_class) {
-		PERR("class creation failed\n");
-		return -1;
-	}
-	PINFO("INIT\n");
-
-	// TODO: перенести в probe()
-	mfhssdrv_device_num = MKDEV(mfhssdrv_major, MFHSSDRV_FIRST_MINOR);
-	mfhssdrv_private *charpriv = &device;
 	struct reg_group *g;
+	platform_private *priv;
+	mfhssdrv_private *charpriv;
+
+	// TODO: проверить факт повторного зондирования return -EAGAIN;
+
+	// выделение памяти под структуру устройства и частичное её заполнение
+	priv = kzalloc(sizeof *priv, GFP_KERNEL);
+	if (!priv) {
+		PERR("Failed to allocate memory for the private data structure\n");
+		return -ENOMEM;
+	}
+	platform_set_drvdata(pdev, priv);
+	charpriv = &priv->charpriv;
+	charpriv->nMinor = MFHSSDRV_FIRST_MINOR;
 
 	// контейнер для динамически создаваемых регистров
 	charpriv->dynamic_regs = kset_create_and_add("mfhss-dynamic", NULL, NULL);
@@ -442,7 +482,7 @@ static int __init mfhssdrv_init(void)
 		cleanup_all(charpriv);
 		return -ENOMEM;
 	}
-	// настраиваем его и регистрируем
+	// настраиваем её и регистрируем
 	kobject_init(&g->kobj, &GROUP_TYPE(DMA));
 	g->kobj.kset = charpriv->hardcoded_regs;
 	res = kobject_add(&g->kobj, &charpriv->hardcoded_regs->kobj, "%s", "dma");
@@ -452,6 +492,8 @@ static int __init mfhssdrv_init(void)
 		cleanup_all(charpriv);
 		kobject_put(&g->kobj);
 		return -ENOMEM;
+	} else {
+		g->charpriv = charpriv;
 	}
 
 	// группа регистров MLIP
@@ -462,7 +504,7 @@ static int __init mfhssdrv_init(void)
 		cleanup_all(charpriv);
 		return -ENOMEM;
 	}
-	// настраиваем его и регистрируем
+	// настраиваем её и регистрируем
 	kobject_init(&g->kobj, &GROUP_TYPE(MLIP));
 	g->kobj.kset = charpriv->hardcoded_regs;
 	res = kobject_add(&g->kobj, &charpriv->hardcoded_regs->kobj, "%s", "mlip");
@@ -472,37 +514,75 @@ static int __init mfhssdrv_init(void)
 		cleanup_all(charpriv);
 		kobject_put(&g->kobj);
 		return -ENOMEM;
+	} else {
+		g->charpriv = charpriv;
 	}
+
+	// создать узел в /dev
+	charpriv->mfhssdrv_device = device_create(mfhssdrv_class, NULL, mfhssdrv_device_num, NULL, MFHSSDRV_NODE_NAME"%d", MFHSSDRV_FIRST_MINOR);
 
 	// регистрация устройства
 	cdev_init(&charpriv->cdev , &mfhssdrv_fops);
 	cdev_add(&charpriv->cdev, mfhssdrv_device_num, 1);
-	charpriv->mfhssdrv_device = device_create(mfhssdrv_class, NULL, mfhssdrv_device_num, NULL, MFHSSDRV_NODE_NAME"%d", MFHSSDRV_FIRST_MINOR);
-	charpriv->nMinor = MFHSSDRV_FIRST_MINOR;
+
+
+
+	PINFO("device probed successfully!\n");
+
+	return 0;
+}
+
+static int mfhssdrv_remove(struct platform_device *pdev)
+{
+	platform_private *priv = platform_get_drvdata(pdev);
+	mfhssdrv_private *charpriv = &priv->charpriv;
+
+	PINFO("In remove() function\n");
+
+	// разрегистрация устройства
+	cdev_del(&charpriv->cdev);
+
+	// удаление узла из /dev
+	device_destroy(mfhssdrv_class, mfhssdrv_device_num);
+
+	// удалить все каталоги статических и динамических регистров
+	cleanup_all(charpriv);
+
+	// удаление структуры данных драйвера
+	kfree(priv);
+	platform_set_drvdata(pdev, NULL);
+
+	return 0;
+}
+
+static int __init mfhssdrv_init(void)
+{
+	int res;
+
+	res = alloc_chrdev_region(&mfhssdrv_device_num, MFHSSDRV_FIRST_MINOR, MFHSSDRV_N_MINORS, DRIVER_NAME);
+	if(res) {
+		PERR("register device no failed\n");
+		return -1;
+	}
+	mfhssdrv_major = MAJOR(mfhssdrv_device_num);
+
+	mfhssdrv_class = class_create(THIS_MODULE , DRIVER_NAME);
+	if(!mfhssdrv_class) {
+		PERR("class creation failed\n");
+		return -1;
+	}
+	PINFO("INIT\n");
 
 	return 0;
 }
 
 static void __exit mfhssdrv_exit(void)
 {	
-	/* TODO Auto-generated Function Stub */
-	// TODO: перенести в remove()
-	mfhssdrv_private *charpriv = &device;
-
-	cleanup_all(charpriv);
-
-	mfhssdrv_device_num= MKDEV(mfhssdrv_major, MFHSSDRV_FIRST_MINOR);
-
-	// разрегистрация устройства
-	cdev_del(&charpriv->cdev);
-	device_destroy(mfhssdrv_class, mfhssdrv_device_num);
-
 	PINFO("EXIT\n");
 
 	class_destroy(mfhssdrv_class);
-	unregister_chrdev_region(mfhssdrv_device_num ,MFHSSDRV_N_MINORS);	
+	unregister_chrdev_region(mfhssdrv_device_num, MFHSSDRV_N_MINORS);
 }
 
 module_init(mfhssdrv_init);
 module_exit(mfhssdrv_exit);
-
