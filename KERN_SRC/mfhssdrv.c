@@ -33,7 +33,7 @@ typedef struct privatedata {
 	void __iomem *io_base;
 	spinlock_t lock;
 	// sysfs directories
-	struct kobject *hardcoded_regs;
+	struct kset *hardcoded_regs;
 	struct kset *dynamic_regs;
 } mfhssdrv_private;
 
@@ -131,6 +131,15 @@ dev_t mfhssdrv_device_num;
 struct class *mfhssdrv_class;
 // TODO: спрятать в private data для platform device
 mfhssdrv_private device;
+static union
+{
+	struct
+	{
+		u32 dynamic_regs_created: 1;
+		u32	hardcoded_regs_created: 1;
+	} __attribute__((__packed__)) flags;
+	u32 value;
+} status;
 
 static const struct file_operations mfhssdrv_fops= {
 	.owner				= THIS_MODULE,
@@ -215,17 +224,31 @@ static inline void destroy_objects(struct kset *pkset)
 	if (!pkset)
 		return;
 
-	// удаление всех объектов множества
-	for (phead = &pkset->list, pcurr = phead->next, pnext = 0; pnext != phead;  pcurr = pnext)
+	// если был добавлен хотя бы один объект
+	if (pkset->list.next != 0)
 	{
-		pnext = pcurr->next;	// запоминаем указатель на следующий объект ДО уничтожения текущего
-		pkobj = list_entry(pcurr, struct kobject, entry);
-		kobject_del(pkobj);
-		kobject_put(pkobj);
+		// удаление всех объектов множества
+		for (phead = &pkset->list, pcurr = phead->next, pnext = 0; pnext != phead;  pcurr = pnext)
+		{
+			pnext = pcurr->next;	// запоминаем указатель на следующий объект ДО уничтожения текущего
+			pkobj = list_entry(pcurr, struct kobject, entry);
+			kobject_del(pkobj);
+			kobject_put(pkobj);
+		}
 	}
-
 	// удаление каталога верхнего уровня
 	kset_unregister(pkset);
+}
+
+static inline void cleanup_all(mfhssdrv_private *charpriv)
+{
+	if (!charpriv)
+		return;
+
+	destroy_objects(charpriv->dynamic_regs);
+	status.flags.dynamic_regs_created = 0;
+	destroy_objects(charpriv->hardcoded_regs);
+	status.flags.hardcoded_regs_created = 0;
 }
 
 static void release_reg(struct kobject *kobj)
@@ -363,7 +386,7 @@ static int __init mfhssdrv_init(void)
 	/* TODO Auto-generated Function Stub */
 	int res;
 
-	res = alloc_chrdev_region(&mfhssdrv_device_num,MFHSSDRV_FIRST_MINOR,MFHSSDRV_N_MINORS ,DRIVER_NAME);
+	res = alloc_chrdev_region(&mfhssdrv_device_num, MFHSSDRV_FIRST_MINOR,MFHSSDRV_N_MINORS, DRIVER_NAME);
 	if(res) {
 		PERR("register device no failed\n");
 		return -1;
@@ -380,12 +403,68 @@ static int __init mfhssdrv_init(void)
 	// TODO: перенести в probe()
 	mfhssdrv_device_num = MKDEV(mfhssdrv_major, MFHSSDRV_FIRST_MINOR);
 	mfhssdrv_private *charpriv = &device;
+	struct kobject *group;
 
 	// контейнер для динамически создаваемых регистров
-	charpriv->dynamic_regs = kset_create_and_add("mfhssdrv-dynamic", NULL, NULL);
+	charpriv->dynamic_regs = kset_create_and_add("mfhss-dynamic", NULL, NULL);
 	if (!charpriv->dynamic_regs)
 	{
 		PERR("Failure to create kset for dynamic objects\n");
+		cleanup_all(charpriv);
+		return -ENOMEM;
+	} else {
+		status.flags.dynamic_regs_created = 1;
+	}
+
+	// контейнер для статически создаваемых регистров
+	charpriv->hardcoded_regs = kset_create_and_add("mfhss-harcoded", NULL, NULL);
+	if (!charpriv->hardcoded_regs)
+	{
+		PERR("Failure to create kset for hardcoded objects\n");
+		cleanup_all(charpriv);
+		return -ENOMEM;
+	} else {
+		status.flags.hardcoded_regs_created = 1;
+	}
+
+	// создаем подкаталоги для статически создаваемых регистров
+	// группа регистров DMA
+	group = kzalloc(sizeof (struct kobject), GFP_KERNEL);
+	if (!group)
+	{
+		PERR("Failed to alloc group object\n");
+		cleanup_all(charpriv);
+		return -ENOMEM;
+	}
+	// настраиваем его и регистрируем
+	kobject_init(group, &GROUP_TYPE(DMA));
+	group->kset = charpriv->hardcoded_regs;
+	res = kobject_add(group, &charpriv->hardcoded_regs->kobj, "%s", "dma");	// будем надеяться, что name будет скопирован.
+	if (res != 0)
+	{
+		PERR("Failed to register group object\n");
+		cleanup_all(charpriv);
+		kobject_put(group);
+		return -ENOMEM;
+	}
+
+	// группа регистров MLIP
+	group = kzalloc(sizeof (struct kobject), GFP_KERNEL);
+	if (!group)
+	{
+		PERR("Failed to alloc group object\n");
+		cleanup_all(charpriv);
+		return -ENOMEM;
+	}
+	// настраиваем его и регистрируем
+	kobject_init(group, &GROUP_TYPE(MLIP));
+	group->kset = charpriv->hardcoded_regs;
+	res = kobject_add(group, &charpriv->hardcoded_regs->kobj, "%s", "mlip");	// будем надеяться, что name будет скопирован.
+	if (res != 0)
+	{
+		PERR("Failed to register group object\n");
+		cleanup_all(charpriv);
+		kobject_put(group);
 		return -ENOMEM;
 	}
 
@@ -404,7 +483,7 @@ static void __exit mfhssdrv_exit(void)
 	// TODO: перенести в remove()
 	mfhssdrv_private *charpriv = &device;
 
-	destroy_objects(charpriv->dynamic_regs);
+	cleanup_all(charpriv);
 
 	mfhssdrv_device_num= MKDEV(mfhssdrv_major, MFHSSDRV_FIRST_MINOR);
 
