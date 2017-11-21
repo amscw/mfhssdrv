@@ -9,6 +9,9 @@ Description		:		LINUX DEVICE DRIVER PROJECT
 
 
 // WARNING! kset никуда не можем встраивать, т.к. для него уже предопределена функция освобождения release и нет возможности её изменить
+// TODO: обработчики прерываний
+// TODO: реализация методов fops
+// TODO: добавить в ioctl возможность добавления атрибутов
 
 #include "mfhssdrv.h"
 #include "mfhssdrv_ioctl.h"
@@ -16,10 +19,10 @@ Description		:		LINUX DEVICE DRIVER PROJECT
 //-------------------------------------------------------------------------------------------------
 // MACRO
 //-------------------------------------------------------------------------------------------------
-#define MFHSSDRV_N_MINORS 1
-#define MFHSSDRV_FIRST_MINOR 0
-#define MFHSSDRV_NODE_NAME "mfhss"
-#define MFHSSDRV_BUFF_SIZE 1024
+#define MFHSSDRV_N_MINORS 		1
+#define MFHSSDRV_FIRST_MINOR 	0
+#define MFHSSDRV_NODE_NAME 		"mfhss"
+#define MFHSSDRV_DMA_SIZE 		1024
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("MOSKVIN");
@@ -29,15 +32,34 @@ MODULE_AUTHOR("MOSKVIN");
 //-------------------------------------------------------------------------------------------------
 typedef struct privatedata {
 	int nMinor;
-	char buff[MFHSSDRV_BUFF_SIZE];
 	struct cdev cdev;
 	struct device *mfhssdrv_device;
-	// for I/O operations
 	void __iomem *io_base;
+	char *src_addr;
+	char *dst_addr;
+	dma_addr_t src_handle;
+	dma_addr_t dst_handle;
 	spinlock_t lock;
-	// sysfs directories
 	struct kset *hardcoded_regs;
 	struct kset *dynamic_regs;
+	struct resource resource;
+	wait_queue_head_t wq_rx;
+	wait_queue_head_t wq_tx;
+	union
+	{
+		struct
+		{
+			u32 is_open: 1;
+			u32 tx_interrupt: 1;
+			u32 rx_interrupt: 1;
+			u32 is_devmem_allocated: 1;
+			u32 is_devmem_mapped: 1;
+			u32 is_dma_outbuf_allocated: 1;
+			u32 is_dma_incbuf_allocated: 1;
+			u32 reserved: 25;
+		} __attribute__((__packed__)) flags;
+		u32 value;
+	} status;
 } mfhssdrv_private;
 
 typedef struct {
@@ -150,6 +172,14 @@ struct reg_group {
 		.release = release_##group\
 	};
 
+// WARNING: требуется контекст с charpriv
+#define REG_WR(group, reg, value) iowrite32(value, (void __iomem*)(charpriv->io_base + REG_##group##_##reg##_ADDRESS))
+#define REG_RD(group, reg) ioread32((void __iomem*)(charpriv->io_base + REG_##group##_##reg##_ADDRESS))
+
+// найти нужный kobj по reg/group?
+// пробегаемся по списку объектов, просматриваем их атрибуты. смотрим на  name атрибута, если совпал, значит объект наш.
+
+
 //-------------------------------------------------------------------------------------------------
 // Prototypes
 //-------------------------------------------------------------------------------------------------
@@ -170,7 +200,6 @@ static int mfhssdrv_remove(struct platform_device *pdev);
 int mfhssdrv_major=0;
 dev_t mfhssdrv_device_num;
 struct class *mfhssdrv_class;
-// TODO: спрятать в private data для platform device
 
 static struct of_device_id mfhssdrv_of_match[] = {
 	{ .compatible = "xlnx,axi-modem-fhss-1.0", },
@@ -274,8 +303,8 @@ static inline void destroy_objects(struct kset *pkset)
 
 	PDEBUG("destroing group: %s\n", pkset->kobj.name);
 
-
 	// если был добавлен хотя бы один объект
+	// TODO: вместо этого условия можем в цикле исправить инициализатор: pnext=pcurr
 	if (&pkset->list != pkset->list.next)
 	{
 		// удаление всех объектов множества
@@ -298,8 +327,24 @@ static inline void cleanup_all(mfhssdrv_private *charpriv)
 	if (!charpriv)
 		return;
 
+	if (charpriv->status.flags.is_dma_outbuf_allocated)
+		dma_free_coherent(NULL, MFHSSDRV_DMA_SIZE, charpriv->src_addr, charpriv->src_handle);
+
+	if (charpriv->status.flags.is_dma_incbuf_allocated)
+		dma_free_coherent(NULL, MFHSSDRV_DMA_SIZE, charpriv->dst_addr, charpriv->dst_handle);
+
+	if (charpriv->status.flags.is_devmem_mapped)
+		iounmap(charpriv->io_base);
+
+	if (charpriv->status.flags.is_devmem_allocated)
+		release_mem_region(charpriv->resource.start, resource_size(&charpriv->resource));
+
+	charpriv->status.value = 0;
+
+	// удалить объекты sysfs
 	destroy_objects(charpriv->dynamic_regs);
 	destroy_objects(charpriv->hardcoded_regs);
+
 
 	kfree(priv);
 }
@@ -313,18 +358,30 @@ static void release_reg(struct kobject *kobj)
 
 static ssize_t sysfs_show_reg(struct kobject *kobj, struct attribute *attr, char *buf)
 {
-	struct kset *dynamic_regs = container_of(kobj->parent, struct kset, kobj);
-	mfhssdrv_private *charpriv = container_of(&dynamic_regs, mfhssdrv_private, dynamic_regs);
-	PDEBUG("charpriv address: %p\n", charpriv);
-	return 0;
+	unsigned long flags = 0;
+	struct reg_group *g = container_of(kobj, struct reg_group, kobj);
+	struct reg_attribute *a = container_of(attr, struct reg_attribute, default_attribute);
+
+	spin_lock_irqsave(&g->charpriv->lock, flags);
+	a->value = ioread32((void __iomem*)(g->charpriv->io_base + a->address));
+	spin_unlock_irqrestore(&g->charpriv->lock, flags);
+	PDEBUG("read from %s@0x%X = 0x%X\n", attr->name, a->address, a->value);
+	return scnprintf(buf, PAGE_SIZE, "%d\n", a->value);
 }
 
 static ssize_t sysfs_store_reg(struct kobject *kobj, struct attribute* attr, const char *buf, size_t len)
 {
-	PDEBUG("sysfs_store not implemented\n");
-	return 0;
-}
+	unsigned long flags = 0;
+	struct reg_group *g = container_of(kobj, struct reg_group, kobj);
+	struct reg_attribute *a = container_of(attr, struct reg_attribute, default_attribute);
 
+	sscanf(buf, "%d", &a->value);
+	spin_lock_irqsave(&g->charpriv->lock, flags);
+	iowrite32(a->value, (void __iomem*)(g->charpriv->io_base + a->address));
+	spin_unlock_irqrestore(&g->charpriv->lock, flags);
+	PDEBUG("write 0x%X to %s@0x%X\n", a->value, a->default_attribute.name, a->address);
+	return len;
+}
 
 static int mfhssdrv_open(struct inode *inode,struct file *filp)
 {
@@ -442,7 +499,7 @@ static int mfhssdrv_probe(struct platform_device *pdev)
 	platform_private *priv;
 	mfhssdrv_private *charpriv;
 
-	// TODO: проверить факт повторного зондирования return -EAGAIN;
+	// TODO: проверить факт повторного зондирования и вернуть return -EAGAIN если он имел место быть
 
 	// выделение памяти под структуру устройства и частичное её заполнение
 	priv = kzalloc(sizeof *priv, GFP_KERNEL);
@@ -489,7 +546,7 @@ static int mfhssdrv_probe(struct platform_device *pdev)
 	{
 		PERR("Failed to register group object\n");
 		cleanup_all(charpriv);
-		kobject_put(&g->kobj);
+		kobject_put(&g->kobj);	// нужно удалять вручную, т.к. объект не был зарегистрирован
 		return -ENOMEM;
 	} else {
 		g->charpriv = charpriv;
@@ -511,11 +568,78 @@ static int mfhssdrv_probe(struct platform_device *pdev)
 	{
 		PERR("Failed to register group object\n");
 		cleanup_all(charpriv);
-		kobject_put(&g->kobj);
+		kobject_put(&g->kobj);	// нужно удалять вручную, т.к. объект не был зарегистрирован
 		return -ENOMEM;
 	} else {
 		g->charpriv = charpriv;
 	}
+
+	// извлечь диапазон физических адресов
+	res = of_address_to_resource(pdev->dev.of_node, 0, &charpriv->resource);
+	if (res != 0)
+	{
+		PERR("Failed to retrive memory space resource\n");
+		cleanup_all(charpriv);
+		return res;
+	}
+	charpriv->status.flags.is_devmem_allocated = 1;
+	PDEBUG("physical memory range: 0x%llx-0x%llx\n", charpriv->resource.start, charpriv->resource.end);
+
+	// запрос адресного проcтранства у ядра, чтобы не возникло коллизии с другими модулями
+	if (request_mem_region(charpriv->resource.start, resource_size(&charpriv->resource), DRIVER_NAME) == NULL)
+	{
+		PERR("Failed to request memory region\n");
+		cleanup_all(charpriv);
+		return -ENOMEM;
+	}
+
+	// маппинг физических адресов на виртуальные
+	charpriv->io_base = of_iomap(pdev->dev.of_node, 0);
+	if (!charpriv->io_base)
+	{
+		PERR("Failed to mapping region\n");
+		cleanup_all(charpriv);
+		return -ENOMEM;
+	}
+	charpriv->status.flags.is_devmem_mapped = 1;
+
+	// извлечь номера прерываний
+	priv->irq_rx = irq_of_parse_and_map(pdev->dev.of_node, 0);
+	priv->irq_tx = irq_of_parse_and_map(pdev->dev.of_node, 1);
+	PDEBUG("irq_rx=%d, irq_tx=%d\n", priv->irq_rx, priv->irq_tx);
+
+	// ???
+	init_waitqueue_head(&charpriv->wq_rx);
+	init_waitqueue_head(&charpriv->wq_tx);
+	spin_lock_init(&charpriv->lock);
+
+
+	// настройка DMA
+	charpriv->src_addr = dma_zalloc_coherent(NULL, MFHSSDRV_DMA_SIZE, &charpriv->src_handle, GFP_KERNEL);
+	if (!charpriv->src_addr)
+	{
+		PERR("Failed to allocate memory for DMA out-buffer \n");
+		cleanup_all(charpriv);
+		return -ENOMEM;
+	}
+	charpriv->status.flags.is_dma_outbuf_allocated = 1;
+	charpriv->dst_addr = dma_zalloc_coherent(NULL, MFHSSDRV_DMA_SIZE, &charpriv->dst_handle, GFP_KERNEL);
+	if (!charpriv->dst_addr)
+	{
+		PERR("Failed to allocate memory for DMA in-buffer \n");
+		cleanup_all(charpriv);
+		return -ENOMEM;
+	}
+	charpriv->status.flags.is_dma_incbuf_allocated = 1;
+
+	// настройка устройства
+	REG_WR(DMA, SA, charpriv->src_handle);
+	REG_WR(DMA, DA, charpriv->dst_handle);
+	REG_WR(MLIP, RST, 1);
+	REG_WR(MLIP, RST, 0);
+	REG_WR(MLIP, IR, 1);
+	REG_WR(DMA, IR, 2);
+	REG_WR(MLIP, CE, 1);
 
 	// создать узел в /dev
 	charpriv->mfhssdrv_device = device_create(mfhssdrv_class, NULL, mfhssdrv_device_num, NULL, MFHSSDRV_NODE_NAME"%d", MFHSSDRV_FIRST_MINOR);
@@ -523,8 +647,6 @@ static int mfhssdrv_probe(struct platform_device *pdev)
 	// регистрация устройства
 	cdev_init(&charpriv->cdev , &mfhssdrv_fops);
 	cdev_add(&charpriv->cdev, mfhssdrv_device_num, 1);
-
-
 
 	PINFO("device probed successfully!\n");
 
@@ -545,7 +667,7 @@ static int mfhssdrv_remove(struct platform_device *pdev)
 	// удаление узла из /dev
 	device_destroy(mfhssdrv_class, mfhssdrv_device_num);
 
-	// удалить все каталоги статических и динамических регистров
+	// удалить все
 	cleanup_all(charpriv);
 
 	// удаление структуры данных драйвера
