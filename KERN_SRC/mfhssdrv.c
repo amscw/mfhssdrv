@@ -7,6 +7,9 @@ Description		:		LINUX DEVICE DRIVER PROJECT
 ===============================================================================
 */
 
+
+// WARNING! kset никуда не можем встраивать, т.к. для него уже предопределена функция освобождения release и нет возможности её изменить
+
 #include "mfhssdrv.h"
 #include "mfhssdrv_ioctl.h"
 
@@ -37,12 +40,18 @@ typedef struct privatedata {
 	struct kset *dynamic_regs;
 } mfhssdrv_private;
 
-// файлы полей регистров
+// файлы регистров
 struct reg_attribute {
 	struct attribute default_attribute;
 	u32 address;
 	u32 value;
 } __attribute__((__packed__));
+
+// каталоги регистров
+struct reg_group {
+	struct kobject kobj;
+	mfhssdrv_private *charpriv;
+};
 
 //-------------------------------------------------------------------------------------------------
 // MACRO (registers)
@@ -90,8 +99,9 @@ struct reg_attribute {
 #define MAKE_GROUP_OPS(group) \
 	static void release_##group(struct kobject *kobj)\
 	{\
+		struct reg_group *g = container_of(kobj, struct reg_group, kobj);\
 		PDEBUG("destroing object: %s\n", kobj->name);\
-		kfree(kobj);\
+		kfree(g);\
 	}\
 	\
 	static ssize_t sysfs_show_##group(struct kobject *kobj, struct attribute *attr, char *buf)\
@@ -138,15 +148,6 @@ dev_t mfhssdrv_device_num;
 struct class *mfhssdrv_class;
 // TODO: спрятать в private data для platform device
 mfhssdrv_private device;
-static union
-{
-	struct
-	{
-		u32 dynamic_regs_created: 1;
-		u32	hardcoded_regs_created: 1;
-	} __attribute__((__packed__)) flags;
-	u32 value;
-} status = {0};
 
 static const struct file_operations mfhssdrv_fops= {
 	.owner				= THIS_MODULE,
@@ -256,15 +257,14 @@ static inline void cleanup_all(mfhssdrv_private *charpriv)
 		return;
 
 	destroy_objects(charpriv->dynamic_regs);
-	status.flags.dynamic_regs_created = 0;
 	destroy_objects(charpriv->hardcoded_regs);
-	status.flags.hardcoded_regs_created = 0;
 }
 
 static void release_reg(struct kobject *kobj)
 {
+	struct reg_group *g = container_of(kobj, struct reg_group, kobj);
 	PDEBUG("destroing object: %s\n", kobj->name);
-	kfree(kobj);
+	kfree(g);
 }
 
 static ssize_t sysfs_show_reg(struct kobject *kobj, struct attribute *attr, char *buf)
@@ -324,7 +324,7 @@ static long mfhssdrv_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
 {
 	int res = 0;
 	mfhssdrv_private *charpriv = filp->private_data;
-	struct kobject *group;
+	struct reg_group *g;
 	MFHSS_REG_TypeDef reg_descr;
 	MFHSS_GROUP_TypeDef group_descr;
 
@@ -356,20 +356,20 @@ static long mfhssdrv_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
 		// забираем описание группы
 		copy_from_user(&group_descr, (const void __user *)arg, sizeof group_descr);
 		// выделяем память под новый объект
-		group = kzalloc(sizeof (struct kobject), GFP_KERNEL);
-		if (!group)
+		g = kzalloc(sizeof *g, GFP_KERNEL);
+		if (!g)
 		{
 			PERR("Failed to alloc group object %s\n", group_descr.nodeName);
 			return -ENOMEM;
 		}
 		// настраиваем его и регистрируем
-		kobject_init(group, &reg_type);
-		group->kset = charpriv->dynamic_regs;
-		res = kobject_add(group, &charpriv->dynamic_regs->kobj, "%s", group_descr.nodeName);	// будем надеяться, что name будет скопирован.
+		kobject_init(&g->kobj, &reg_type);
+		g->kobj.kset = charpriv->dynamic_regs;
+		res = kobject_add(&g->kobj, &charpriv->dynamic_regs->kobj, "%s", group_descr.nodeName);	// будем надеяться, что name будет скопирован.
 		if (res != 0)
 		{
 			PERR("Failed to register group object %s\n", group_descr.nodeName);
-			kfree(group); // FIXME: kobject_put(reg->kobj); // будет вызван release, который удалит reg
+			kobject_put(&g->kobj); // будет вызван release, который удалит reg
 			return -ENOMEM;
 		}
 		PDEBUG("New group added successfully (%s)\n", group_descr.nodeName);
@@ -413,7 +413,7 @@ static int __init mfhssdrv_init(void)
 	// TODO: перенести в probe()
 	mfhssdrv_device_num = MKDEV(mfhssdrv_major, MFHSSDRV_FIRST_MINOR);
 	mfhssdrv_private *charpriv = &device;
-	struct kobject *group;
+	struct reg_group *g;
 
 	// контейнер для динамически создаваемых регистров
 	charpriv->dynamic_regs = kset_create_and_add("mfhss-dynamic", NULL, NULL);
@@ -422,8 +422,6 @@ static int __init mfhssdrv_init(void)
 		PERR("Failure to create kset for dynamic objects\n");
 		cleanup_all(charpriv);
 		return -ENOMEM;
-	} else {
-		status.flags.dynamic_regs_created = 1;
 	}
 
 	// контейнер для статически создаваемых регистров
@@ -433,48 +431,46 @@ static int __init mfhssdrv_init(void)
 		PERR("Failure to create kset for hardcoded objects\n");
 		cleanup_all(charpriv);
 		return -ENOMEM;
-	} else {
-		status.flags.hardcoded_regs_created = 1;
 	}
 
 	// создаем подкаталоги для статически создаваемых регистров
 	// группа регистров DMA
-	group = kzalloc(sizeof (struct kobject), GFP_KERNEL);
-	if (!group)
+	g = kzalloc(sizeof *g, GFP_KERNEL);
+	if (!g)
 	{
 		PERR("Failed to alloc group object\n");
 		cleanup_all(charpriv);
 		return -ENOMEM;
 	}
 	// настраиваем его и регистрируем
-	kobject_init(group, &GROUP_TYPE(DMA));
-	group->kset = charpriv->hardcoded_regs;
-	res = kobject_add(group, &charpriv->hardcoded_regs->kobj, "%s", "dma");
+	kobject_init(&g->kobj, &GROUP_TYPE(DMA));
+	g->kobj.kset = charpriv->hardcoded_regs;
+	res = kobject_add(&g->kobj, &charpriv->hardcoded_regs->kobj, "%s", "dma");
 	if (res != 0)
 	{
 		PERR("Failed to register group object\n");
 		cleanup_all(charpriv);
-		kobject_put(group);
+		kobject_put(&g->kobj);
 		return -ENOMEM;
 	}
 
 	// группа регистров MLIP
-	group = kzalloc(sizeof (struct kobject), GFP_KERNEL);
-	if (!group)
+	g = kzalloc(sizeof *g, GFP_KERNEL);
+	if (!g)
 	{
 		PERR("Failed to alloc group object\n");
 		cleanup_all(charpriv);
 		return -ENOMEM;
 	}
 	// настраиваем его и регистрируем
-	kobject_init(group, &GROUP_TYPE(MLIP));
-	group->kset = charpriv->hardcoded_regs;
-	res = kobject_add(group, &charpriv->hardcoded_regs->kobj, "%s", "mlip");
+	kobject_init(&g->kobj, &GROUP_TYPE(MLIP));
+	g->kobj.kset = charpriv->hardcoded_regs;
+	res = kobject_add(&g->kobj, &charpriv->hardcoded_regs->kobj, "%s", "mlip");
 	if (res != 0)
 	{
 		PERR("Failed to register group object\n");
 		cleanup_all(charpriv);
-		kobject_put(group);
+		kobject_put(&g->kobj);
 		return -ENOMEM;
 	}
 
