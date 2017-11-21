@@ -88,6 +88,12 @@ struct reg_attribute {
 
 // создает объект с операциями над регистром (sysfs_ops)
 #define MAKE_GROUP_OPS(group) \
+	static void release_##group(struct kobject *kobj)\
+	{\
+		PDEBUG("destroing object: %s\n", kobj->name);\
+		kfree(kobj);\
+	}\
+	\
 	static ssize_t sysfs_show_##group(struct kobject *kobj, struct attribute *attr, char *buf)\
 	{\
 		return 0;\
@@ -109,6 +115,7 @@ struct reg_attribute {
 	static struct kobj_type GROUP_TYPE(group) = {\
 		.sysfs_ops = &group##_ops,\
 		.default_attrs = group##_attributes,\
+		.release = release_##group\
 	};
 
 //-------------------------------------------------------------------------------------------------
@@ -139,7 +146,7 @@ static union
 		u32	hardcoded_regs_created: 1;
 	} __attribute__((__packed__)) flags;
 	u32 value;
-} status;
+} status = {0};
 
 static const struct file_operations mfhssdrv_fops= {
 	.owner				= THIS_MODULE,
@@ -224,8 +231,11 @@ static inline void destroy_objects(struct kset *pkset)
 	if (!pkset)
 		return;
 
+	PDEBUG("destroing group: %s\n", pkset->kobj.name);
+
+
 	// если был добавлен хотя бы один объект
-	if (pkset->list.next != 0)
+	if (&pkset->list != pkset->list.next)
 	{
 		// удаление всех объектов множества
 		for (phead = &pkset->list, pcurr = phead->next, pnext = 0; pnext != phead;  pcurr = pnext)
@@ -253,7 +263,7 @@ static inline void cleanup_all(mfhssdrv_private *charpriv)
 
 static void release_reg(struct kobject *kobj)
 {
-	PINFO("release_reg: destroing object: %s\n", kobj->name);
+	PDEBUG("destroing object: %s\n", kobj->name);
 	kfree(kobj);
 }
 
@@ -338,7 +348,7 @@ static long mfhssdrv_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
 	switch (cmd)
 	{
 	case MFHSSDRV_IORESET:
-		PDEBUG("mfhssdrv_ioctl: Performing reset\n");
+		PDEBUG("Performing reset\n");
 		// TODO: MFHSSDRV_IORESET not implemented
 		break;
 
@@ -349,7 +359,7 @@ static long mfhssdrv_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
 		group = kzalloc(sizeof (struct kobject), GFP_KERNEL);
 		if (!group)
 		{
-			PERR("mfhssdrv_ioctl: Failed to alloc group object %s\n", group_descr.nodeName);
+			PERR("Failed to alloc group object %s\n", group_descr.nodeName);
 			return -ENOMEM;
 		}
 		// настраиваем его и регистрируем
@@ -358,11 +368,11 @@ static long mfhssdrv_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
 		res = kobject_add(group, &charpriv->dynamic_regs->kobj, "%s", group_descr.nodeName);	// будем надеяться, что name будет скопирован.
 		if (res != 0)
 		{
-			PERR("mfhssdrv_ioctl: Failed to register group object %s\n", group_descr.nodeName);
+			PERR("Failed to register group object %s\n", group_descr.nodeName);
 			kfree(group); // FIXME: kobject_put(reg->kobj); // будет вызван release, который удалит reg
 			return -ENOMEM;
 		}
-		PDEBUG("mfhssdrv_ioctl: new group added successfully (%s)\n", group_descr.nodeName);
+		PDEBUG("New group added successfully (%s)\n", group_descr.nodeName);
 		break;
 
 	case MFHSSDRV_IOMAKEREG:
@@ -417,7 +427,7 @@ static int __init mfhssdrv_init(void)
 	}
 
 	// контейнер для статически создаваемых регистров
-	charpriv->hardcoded_regs = kset_create_and_add("mfhss-harcoded", NULL, NULL);
+	charpriv->hardcoded_regs = kset_create_and_add("mfhss-hardcoded", NULL, NULL);
 	if (!charpriv->hardcoded_regs)
 	{
 		PERR("Failure to create kset for hardcoded objects\n");
@@ -439,7 +449,7 @@ static int __init mfhssdrv_init(void)
 	// настраиваем его и регистрируем
 	kobject_init(group, &GROUP_TYPE(DMA));
 	group->kset = charpriv->hardcoded_regs;
-	res = kobject_add(group, &charpriv->hardcoded_regs->kobj, "%s", "dma");	// будем надеяться, что name будет скопирован.
+	res = kobject_add(group, &charpriv->hardcoded_regs->kobj, "%s", "dma");
 	if (res != 0)
 	{
 		PERR("Failed to register group object\n");
@@ -459,7 +469,7 @@ static int __init mfhssdrv_init(void)
 	// настраиваем его и регистрируем
 	kobject_init(group, &GROUP_TYPE(MLIP));
 	group->kset = charpriv->hardcoded_regs;
-	res = kobject_add(group, &charpriv->hardcoded_regs->kobj, "%s", "mlip");	// будем надеяться, что name будет скопирован.
+	res = kobject_add(group, &charpriv->hardcoded_regs->kobj, "%s", "mlip");
 	if (res != 0)
 	{
 		PERR("Failed to register group object\n");

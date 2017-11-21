@@ -36,8 +36,8 @@
 									<listOptionValue builtIn="false" value="CONFIG_PM=1"/>
 								</option>
 								<option id="gnu.c.compiler.option.include.paths.1873729348" name="Include paths (-I)" superClass="gnu.c.compiler.option.include.paths" valueType="includePath">
-									<listOptionValue builtIn="false" value="/usr/src/linux-headers-4.10.0-38-generic/arch/x86/include/"/>
-									<listOptionValue builtIn="false" value="/usr/src/linux-headers-4.10.0-38-generic/include/"/>
+									<listOptionValue builtIn="false" value="/usr/src/linux-headers-4.10.0-40-generic/arch/x86/include/"/>
+									<listOptionValue builtIn="false" value="/usr/src/linux-headers-4.10.0-40-generic/include/"/>
 								</option>
 								<inputType id="cdt.managedbuild.tool.gnu.c.compiler.input.36842179" superClass="cdt.managedbuild.tool.gnu.c.compiler.input"/>
 							</tool>
@@ -246,6 +246,7 @@
 				</buildTargets>
 			</storageModule>
 			<storageModule moduleId="org.eclipse.cdt.core.language.mapping"/>
+			<storageModule moduleId="org.eclipse.cdt.internal.ui.text.commentOwnerProjectMappings"/>
 		</cconfiguration>
 	</storageModule>
 	<storageModule moduleId="cdtBuildSystem" version="4.0.0">
