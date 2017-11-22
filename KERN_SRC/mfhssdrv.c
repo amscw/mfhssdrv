@@ -76,6 +76,7 @@ struct reg_attribute {
 	struct attribute default_attribute;
 	u32 address;
 	u32 value;
+	char name[32];	// TODO: хорошо бы динамически, чтобы не расходовать память зря
 } __attribute__((__packed__));
 
 // каталоги регистров
@@ -360,7 +361,7 @@ static void release_reg(struct kobject *kobj)
 
 static ssize_t sysfs_show_reg(struct kobject *kobj, struct attribute *attr, char *buf)
 {
-	unsigned long flags = 0;
+	unsigned long flags;
 	struct reg_group *g = container_of(kobj, struct reg_group, kobj);
 	struct reg_attribute *a = container_of(attr, struct reg_attribute, default_attribute);
 
@@ -530,6 +531,7 @@ static long mfhssdrv_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
 		// настраиваем его и регистрируем
 		kobject_init(&g->kobj, &reg_type);
 		g->kobj.kset = charpriv->dynamic_regs;
+		g->charpriv = charpriv;
 		res = kobject_add(&g->kobj, &charpriv->dynamic_regs->kobj, "%s", group_descr.nodeName);	// будем надеяться, что name будет скопирован.
 		if (res != 0)
 		{
@@ -555,7 +557,8 @@ static long mfhssdrv_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
 					return -ENOMEM;
 				}
 				a->address = reg_descr.address;
-				a->default_attribute.name = reg_descr.regName;	// FIXME: надеюсь, строка скопируется где-то внутри
+				strcpy(a->name, reg_descr.regName);
+				a->default_attribute.name = a->name;
 				a->default_attribute.mode = S_IRUGO | S_IWUSR;
 				res = sysfs_create_file(k, &a->default_attribute);
 				if (res != 0)
