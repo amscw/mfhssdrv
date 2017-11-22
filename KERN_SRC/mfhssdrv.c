@@ -489,8 +489,11 @@ static long mfhssdrv_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
 	struct reg_group *g;
 	MFHSS_REG_TypeDef reg_descr;
 	MFHSS_GROUP_TypeDef group_descr;
+	struct list_head *p;
+	struct kobject *k;
+	struct reg_attribute *a;
 
-	PINFO("In char driver ioctl() function\n");
+	// PINFO("In char driver ioctl() function\n");
 
 	// validate type
 	if (_IOC_TYPE(cmd) != MFHSSDRV_IOC_MAGIC)
@@ -540,9 +543,31 @@ static long mfhssdrv_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
 	case MFHSSDRV_IOMAKEREG:
 		// забираем описание регистра из пространства пользователя
 		copy_from_user(&reg_descr, (const void __user *)arg, sizeof reg_descr);
-		//reg->address = reg_descr.address;
-		//reg->charpriv = charpriv;
-
+		// поиск указанной группы
+		list_for_each(p, &charpriv->dynamic_regs->list) {
+			k = list_entry(p, struct kobject, entry);
+			if (!strcmp(k->name, reg_descr.targetNode))
+			{
+				a = kzalloc (sizeof *a, GFP_KERNEL);
+				if (!a)
+				{
+					PERR("Failed to allocate attribute %s\n", reg_descr.regName);
+					return -ENOMEM;
+				}
+				a->address = reg_descr.address;
+				a->default_attribute.name = reg_descr.regName;	// FIXME: надеюсь, строка скопируется где-то внутри
+				a->default_attribute.mode = S_IRUGO | S_IWUSR;
+				res = sysfs_create_file(k, &a->default_attribute);
+				if (res != 0)
+				{
+					PERR("Failed to register attribute %s\n", reg_descr.regName);
+					kfree(a);
+					return -ENOMEM;
+				}
+				PDEBUG("New attribute %s added to group %s\n", reg_descr.regName, reg_descr.targetNode);
+				break;
+			}
+		}
 		break;
 
 	default:

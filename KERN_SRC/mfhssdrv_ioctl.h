@@ -16,6 +16,7 @@
 typedef struct
 {
 	/* const */ char regName[REG_NAME_SIZE];
+	/* const */ char targetNode[REG_NAME_SIZE];
 	unsigned int address;
 } __attribute__((__packed__)) MFHSS_REG_TypeDef;
 
