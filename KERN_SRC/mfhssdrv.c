@@ -9,9 +9,11 @@ Description		:		LINUX DEVICE DRIVER PROJECT
 
 
 // WARNING! kset никуда не можем встраивать, т.к. для него уже предопределена функция освобождения release и нет возможности её изменить
-// TODO: обработчики прерываний
-// TODO: реализация методов fops
+// WARNING! принять соглашение имен:
+// charpriv - указатель на структуру данных драйвера
+
 // TODO: добавить в ioctl возможность добавления атрибутов
+// TODO: макросы REG_WR/REG_RD: проблема использования io_base. Подумать на досуге.
 
 #include "mfhssdrv.h"
 #include "mfhssdrv_ioctl.h"
@@ -107,7 +109,7 @@ struct reg_group {
 #define REG_MLIP_RST_NAME		"rst"
 #define REG_MLIP_RST_ADDRESS	0x0028
 #define REG_MLIP_CE_NAME		"ce"
-#define REG_MLIP_CE_ADDRESS		0x001C
+#define REG_MLIP_CE_ADDRESS		0x002C
 
 // имя переменной-регистра (атрибута)
 #define REG(group, reg) reg_##group##_##reg
@@ -383,42 +385,101 @@ static ssize_t sysfs_store_reg(struct kobject *kobj, struct attribute* attr, con
 	return len;
 }
 
+static irqreturn_t mfhssdrv_irq_rx_handler(int irq, void *dev_id /*, struct pt_regs *regs */ )
+{
+	mfhssdrv_private *charpriv = &(((platform_private*)dev_id)->charpriv);
+
+	REG_WR(DMA, SR, 2);
+	charpriv->status.flags.rx_interrupt = 1;
+	wake_up_interruptible(&charpriv->wq_rx);
+	return IRQ_HANDLED;
+}
+
+static irqreturn_t mfhssdrv_irq_tx_handler(int irq, void *dev_id /*, struct pt_regs *regs */ )
+{
+	mfhssdrv_private *charpriv = &(((platform_private*)dev_id)->charpriv);
+
+	REG_WR(MLIP, SR, 1);
+	charpriv->status.flags.tx_interrupt = 1;
+	wake_up_interruptible(&charpriv->wq_tx);
+	return IRQ_HANDLED;
+}
+
 static int mfhssdrv_open(struct inode *inode,struct file *filp)
 {
-	/* TODO Auto-generated Function */
-	mfhssdrv_private *priv = container_of(inode->i_cdev, mfhssdrv_private, cdev);
+	mfhssdrv_private *charpriv = container_of(inode->i_cdev, mfhssdrv_private, cdev);
+	platform_private *priv = container_of(charpriv, platform_private, charpriv);
 
-	filp->private_data = priv;
-	PINFO("In char driver open() function\n");
+	if (charpriv->status.flags.is_open)
+	{
+		PERR("Device already opened!\n");
+		return -ENOMEM;
+	}
+
+	if (request_irq(priv->irq_rx, mfhssdrv_irq_rx_handler, IRQF_SHARED, DRIVER_NAME, priv))
+	{
+		PERR("Failed to request for rx irq\n");
+		return -ENOMEM;
+	}
+
+	if (request_irq(priv->irq_tx, mfhssdrv_irq_tx_handler, IRQF_SHARED, DRIVER_NAME, priv))
+	{
+		PERR("Failed to request for tx irq\n");
+		return -ENOMEM;
+	}
+
+	filp->private_data = charpriv;
+	charpriv->status.flags.is_open = 1;
 	return 0;
 }					
 
 static int mfhssdrv_release(struct inode *inode,struct file *filp)
 {
-	/* TODO Auto-generated Function */
-	mfhssdrv_private *priv = filp->private_data;
-	PINFO("In char driver release() function\n");
+	mfhssdrv_private *charpriv = filp->private_data;
+	platform_private *priv = container_of(charpriv, platform_private, charpriv);
+
+	free_irq(priv->irq_rx, priv);
+	free_irq(priv->irq_tx, priv);
+	charpriv->status.flags.is_open = 0;
 	return 0;
 }
 
 static ssize_t mfhssdrv_read(struct file *filp,	char __user *ubuff,size_t count, loff_t *offp)
 {
-	/* TODO Auto-generated Function */
-	int n=0;
-	mfhssdrv_private *priv = filp->private_data;
+	int n = 0, res;
+	mfhssdrv_private *charpriv = filp->private_data;
 
-	PINFO("In char driver read() function\n");
+	res = wait_event_interruptible_timeout(charpriv->wq_rx, charpriv->status.flags.rx_interrupt != 0, msecs_to_jiffies(1));
+	if (res == 0)
+	{
+		// @condition evaluated to %false after the @timeout elapsed
+		return 0;
+	}
+	n = REG_RD(DMA, DL);
+	copy_to_user(ubuff, charpriv->dst_addr, n);
+	charpriv->status.flags.rx_interrupt = 0;
 	return n;
 }
 
 static ssize_t mfhssdrv_write(struct file *filp, const char __user *ubuff, size_t count, loff_t *offp)
 {
-	/* TODO Auto-generated Function */
-	int n=0;
-	mfhssdrv_private *priv = filp->private_data;
+	int res;
+	mfhssdrv_private *charpriv = filp->private_data;
 
-	PINFO("In char driver write() function\n");
-	return n;
+	if (count > MFHSSDRV_DMA_SIZE)
+		count = MFHSSDRV_DMA_SIZE;
+
+	copy_from_user(charpriv->src_addr, ubuff, count);
+	REG_WR(DMA, SL, count);
+	REG_WR(DMA, CR, 1);
+	res = wait_event_interruptible_timeout(charpriv->wq_tx, charpriv->status.flags.tx_interrupt != 0, msecs_to_jiffies(1000));
+	if (res == 0)
+	{
+		// @condition evaluated to %false after the @timeout elapsed
+		return 0;
+	}
+	charpriv->status.flags.tx_interrupt = 0;
+	return count;
 }
 
 static long mfhssdrv_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
@@ -492,6 +553,7 @@ static long mfhssdrv_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
 	return 0;
 }
 
+// TODO: вместо постоянных проверок ошибок использовать макрос CHECK()
 static int mfhssdrv_probe(struct platform_device *pdev)
 {
 	int res;
@@ -583,7 +645,8 @@ static int mfhssdrv_probe(struct platform_device *pdev)
 		return res;
 	}
 	charpriv->status.flags.is_devmem_allocated = 1;
-	PDEBUG("physical memory range: 0x%llx-0x%llx\n", charpriv->resource.start, charpriv->resource.end);
+	// PDEBUG("physical memory range: 0x%llx-0x%llx\n", charpriv->resource.start, charpriv->resource.end);
+	PDEBUG("physical memory range: 0x%x-0x%x\n", charpriv->resource.start, charpriv->resource.end);
 
 	// запрос адресного проcтранства у ядра, чтобы не возникло коллизии с другими модулями
 	if (request_mem_region(charpriv->resource.start, resource_size(&charpriv->resource), DRIVER_NAME) == NULL)
