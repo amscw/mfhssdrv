@@ -390,7 +390,7 @@ static irqreturn_t mfhssdrv_irq_rx_handler(int irq, void *dev_id /*, struct pt_r
 {
 	mfhssdrv_private *charpriv = &(((platform_private*)dev_id)->charpriv);
 
-	REG_WR(DMA, SR, 2);
+	REG_WR(DMA, SR, 0);
 	charpriv->status.flags.rx_interrupt = 1;
 	wake_up_interruptible(&charpriv->wq_rx);
 	return IRQ_HANDLED;
@@ -400,7 +400,7 @@ static irqreturn_t mfhssdrv_irq_tx_handler(int irq, void *dev_id /*, struct pt_r
 {
 	mfhssdrv_private *charpriv = &(((platform_private*)dev_id)->charpriv);
 
-	REG_WR(MLIP, SR, 1);
+	REG_WR(MLIP, SR, 0);
 	charpriv->status.flags.tx_interrupt = 1;
 	wake_up_interruptible(&charpriv->wq_tx);
 	return IRQ_HANDLED;
@@ -729,7 +729,7 @@ static int mfhssdrv_probe(struct platform_device *pdev)
 	REG_WR(MLIP, RST, 1);
 	REG_WR(MLIP, RST, 0);
 	REG_WR(MLIP, IR, 1);
-	REG_WR(DMA, IR, 2);
+	REG_WR(DMA, IR, 1);
 	REG_WR(MLIP, CE, 1);
 
 	// создать узел в /dev
